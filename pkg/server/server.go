@@ -18,6 +18,7 @@ package server
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -530,10 +531,12 @@ func (s *Server) backupIptablesRules(pod *v1.Pod, suffix string, iptables utilip
 }
 
 const (
-	ingressChain       = "MULTI-INGRESS"
-	egressChain        = "MULTI-EGRESS"
-	ingressCommonChain = "MULTI-INGRESS-COMMON"
-	egressCommonChain  = "MULTI-EGRESS-COMMON"
+	ingressChain           = "MULTI-INGRESS"
+	egressChain            = "MULTI-EGRESS"
+	ingressCommonChain     = "MULTI-INGRESS-COMMON"
+	egressCommonChain      = "MULTI-EGRESS-COMMON"
+	additionalIngressChain = "MULTI-ADDITIONAL-INGRESS"
+	additionalEgressChain  = "MULTI-ADDITIONAL-EGRESS"
 )
 
 func (s *Server) generatePolicyRulesForPod(pod *v1.Pod, podInfo *controllers.PodInfo) error {
@@ -633,6 +636,26 @@ func (s *Server) generatePolicyRulesForPodAndFamily(pod *v1.Pod, podInfo *contro
 			idx++
 		}
 	}
+
+	var (
+		additionalRules string
+		ok              bool
+	)
+	if iptables.IsIPv6() {
+		additionalRules, ok = pod.GetAnnotations()[AdditionalIPv6RulesAnnotation]
+	} else {
+		additionalRules, ok = pod.GetAnnotations()[AdditionalIPv4RulesAnnotation]
+	}
+
+	if ok {
+		rules := &AdditionalRules{}
+		if err := json.Unmarshal([]byte(additionalRules), rules); err != nil {
+			klog.Errorf("bad additional rules for pod [%s]: %v", podNamespacedName(pod), err)
+		} else {
+			iptableBuffer.renderAdditionalRules(s, rules)
+		}
+	}
+
 	if ingressRendered != 0 {
 		writeLine(iptableBuffer.policyIndex, "-A", "MULTI-INGRESS", "-j", "DROP")
 	}

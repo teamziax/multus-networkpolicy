@@ -2695,4 +2695,100 @@ COMMIT
 		Expect(buf.filterRules.String()).To(Equal(finalizedRules))
 	})
 
+	It("additional rules", func() {
+		port := intstr.FromInt(8888)
+		protoTCP := v1.ProtocolTCP
+		ingressPolicies1 := &multiv1beta1.MultiNetworkPolicy{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "ingressPolicies1",
+				Namespace: "testns1",
+			},
+			Spec: multiv1beta1.MultiNetworkPolicySpec{
+				Ingress: []multiv1beta1.MultiNetworkPolicyIngressRule{
+					{
+						Ports: []multiv1beta1.MultiNetworkPolicyPort{
+							{
+								Protocol: &protoTCP,
+								Port:     &port,
+							},
+						},
+						From: []multiv1beta1.MultiNetworkPolicyPeer{
+							{
+								IPBlock: &multiv1beta1.IPBlock{
+									CIDR:   "10.1.1.1/24",
+									Except: []string{"10.1.1.254"},
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		additionalRules := &AdditionalRules{
+			Ingress: []string{"-m udp -p udp --sport bootc --dport bootps -j ACCEPT"},
+			Egress:  []string{"-p udp --dport 53 -j ACCEPT", "-p tcp --dport 53 -j ACCEPT"},
+		}
+
+		ipt := fakeiptables.NewFake()
+		Expect(ipt).NotTo(BeNil())
+		buf := newIptableBuffer()
+		Expect(buf).NotTo(BeNil())
+
+		// verify buf initialized at init
+		buf.Init(ipt)
+		s := NewFakeServer("samplehost")
+		Expect(s).NotTo(BeNil())
+
+		Expect(s.netdefChanges.Update(
+			nil,
+			NewNetDef("testns1", "net-attach1", NewCNIConfig("testCNI", "multi")))).To(BeTrue())
+		Expect(s.netdefChanges.GetPluginType(types.NamespacedName{Namespace: "testns1", Name: "net-attach1"})).To(Equal("multi"))
+
+		pod1 := NewFakePodWithNetAnnotation(
+			"testns1",
+			"testpod1",
+			"net-attach1",
+			NewFakeNetworkStatus("testns1", "net-attach1", "192.168.1.1", "10.1.1.1"),
+			nil)
+
+		AddPod(s, pod1)
+		podInfo1, err := s.podMap.GetPodInfo(pod1)
+		Expect(err).NotTo(HaveOccurred())
+
+		buf.renderIngress(s, podInfo1, 0, ingressPolicies1, []string{"testns1/net-attach1"})
+		buf.renderAdditionalRules(s, additionalRules)
+
+		buf.FinalizeRules()
+		finalizedRules :=
+			`*filter
+:MULTI-INGRESS - [0:0]
+:MULTI-INGRESS-COMMON - [0:0]
+:MULTI-EGRESS - [0:0]
+:MULTI-EGRESS-COMMON - [0:0]
+:MULTI-0-INGRESS - [0:0]
+:MULTI-0-INGRESS-0-PORTS - [0:0]
+:MULTI-0-INGRESS-0-FROM - [0:0]
+:MULTI-ADDITIONAL-INGRESS - [0:0]
+:MULTI-ADDITIONAL-EGRESS - [0:0]
+-A MULTI-ADDITIONAL-INGRESS -m comment --comment "additional rules from pod annotation"
+-A MULTI-ADDITIONAL-INGRESS -m udp -p udp --sport bootc --dport bootps -j ACCEPT
+-A MULTI-ADDITIONAL-EGRESS -m comment --comment "additional rules from pod annotation"
+-A MULTI-ADDITIONAL-EGRESS -p udp --dport 53 -j ACCEPT
+-A MULTI-ADDITIONAL-EGRESS -p tcp --dport 53 -j ACCEPT
+-A MULTI-INGRESS -m comment --comment "policy:ingressPolicies1 net-attach-def:testns1/net-attach1" -i net1 -j MULTI-0-INGRESS
+-A MULTI-INGRESS -m mark --mark 0x30000/0x30000 -j RETURN
+-A MULTI-0-INGRESS -j MARK --set-xmark 0x0/0x30000
+-A MULTI-0-INGRESS -j MULTI-0-INGRESS-0-PORTS
+-A MULTI-0-INGRESS -j MULTI-0-INGRESS-0-FROM
+-A MULTI-0-INGRESS -m mark --mark 0x30000/0x30000 -j RETURN
+-A MULTI-0-INGRESS-0-PORTS -i net1 -m tcp -p tcp --dport 8888 -j MARK --set-xmark 0x10000/0x10000
+-A MULTI-0-INGRESS-0-FROM -i net1 -s 10.1.1.254 -j DROP
+-A MULTI-0-INGRESS-0-FROM -i net1 -s 10.1.1.1/24 -j MARK --set-xmark 0x20000/0x20000
+-A MULTI-0-INGRESS-0-FROM -i net1 -s 10.1.1.1 -j MARK --set-xmark 0x20000/0x20000
+COMMIT
+`
+		Expect(buf.filterRules.String()).To(Equal(finalizedRules))
+	})
+
 })

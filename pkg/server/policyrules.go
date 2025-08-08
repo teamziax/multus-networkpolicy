@@ -36,6 +36,23 @@ import (
 // of the policy
 const PolicyNetworkAnnotation = "k8s.v1.cni.cncf.io/policy-for"
 
+// AdditionalIPv4RulesAnnotation is annotation for pod, to specify additional
+// iptables rules for IPv4 traffic.
+// The format of the annotation is a JSON object with two fields:
+// "ingress" and "egress", each containing an array of iptables rules.
+const AdditionalIPv4RulesAnnotation = "k8s.v1.cni.cncf.io/ipv4-rules"
+
+// AdditionalIPv6RulesAnnotation is annotation for pod, to specify additional
+// iptables rules for IPv6 traffic.
+// The format of the annotation is a JSON object with two fields:
+const AdditionalIPv6RulesAnnotation = "k8s.v1.cni.cncf.io/ipv6-rules"
+
+// AdditionalRules is a struct to hold additional iptables rules for ingress and egress.
+type AdditionalRules struct {
+	Ingress []string `json:"ingress,omitempty"`
+	Egress  []string `json:"egress,omitempty"`
+}
+
 /*
 // GetChainLines parses a table's iptables-save data to find chains in the table.
 // It returns a map of iptables.Chain to []byte where the []byte is the chain line
@@ -44,33 +61,35 @@ const PolicyNetworkAnnotation = "k8s.v1.cni.cncf.io/policy-for"
 func GetChainLines(table Table, save []byte) map[Chain][]byte {
 */
 type iptableBuffer struct {
-	currentFilter map[utiliptables.Chain]struct{}
-	currentChain  map[utiliptables.Chain]bool
-	activeChain   map[utiliptables.Chain]bool
-	policyCommon  *bytes.Buffer
-	policyIndex   *bytes.Buffer
-	ingressPorts  *bytes.Buffer
-	ingressFrom   *bytes.Buffer
-	egressPorts   *bytes.Buffer
-	egressTo      *bytes.Buffer
-	filterChains  *bytes.Buffer
-	filterRules   *bytes.Buffer
-	isIPv6        bool
+	currentFilter    map[utiliptables.Chain]struct{}
+	currentChain     map[utiliptables.Chain]bool
+	activeChain      map[utiliptables.Chain]bool
+	policyCommon     *bytes.Buffer
+	policyAdditional *bytes.Buffer
+	policyIndex      *bytes.Buffer
+	ingressPorts     *bytes.Buffer
+	ingressFrom      *bytes.Buffer
+	egressPorts      *bytes.Buffer
+	egressTo         *bytes.Buffer
+	filterChains     *bytes.Buffer
+	filterRules      *bytes.Buffer
+	isIPv6           bool
 }
 
 func newIptableBuffer() *iptableBuffer {
 	buf := &iptableBuffer{
-		currentFilter: make(map[utiliptables.Chain]struct{}),
-		policyCommon:  bytes.NewBuffer(nil),
-		policyIndex:   bytes.NewBuffer(nil),
-		ingressPorts:  bytes.NewBuffer(nil),
-		ingressFrom:   bytes.NewBuffer(nil),
-		egressPorts:   bytes.NewBuffer(nil),
-		egressTo:      bytes.NewBuffer(nil),
-		filterChains:  bytes.NewBuffer(nil),
-		filterRules:   bytes.NewBuffer(nil),
-		currentChain:  map[utiliptables.Chain]bool{},
-		activeChain:   map[utiliptables.Chain]bool{},
+		currentFilter:    make(map[utiliptables.Chain]struct{}),
+		policyCommon:     bytes.NewBuffer(nil),
+		policyAdditional: bytes.NewBuffer(nil),
+		policyIndex:      bytes.NewBuffer(nil),
+		ingressPorts:     bytes.NewBuffer(nil),
+		ingressFrom:      bytes.NewBuffer(nil),
+		egressPorts:      bytes.NewBuffer(nil),
+		egressTo:         bytes.NewBuffer(nil),
+		filterChains:     bytes.NewBuffer(nil),
+		filterRules:      bytes.NewBuffer(nil),
+		currentChain:     map[utiliptables.Chain]bool{},
+		activeChain:      map[utiliptables.Chain]bool{},
 	}
 	return buf
 }
@@ -112,6 +131,7 @@ func (ipt *iptableBuffer) Init(iptables utiliptables.Interface) {
 // Reset clears iptableBuffer
 func (ipt *iptableBuffer) Reset() {
 	ipt.policyCommon.Reset()
+	ipt.policyAdditional.Reset()
 	ipt.policyIndex.Reset()
 	ipt.ingressPorts.Reset()
 	ipt.ingressFrom.Reset()
@@ -131,6 +151,7 @@ func (ipt *iptableBuffer) FinalizeRules() {
 	}
 	ipt.filterRules.Write(ipt.filterChains.Bytes())
 	ipt.filterRules.Write(ipt.policyCommon.Bytes())
+	ipt.filterRules.Write(ipt.policyAdditional.Bytes())
 	ipt.filterRules.Write(ipt.policyIndex.Bytes())
 	ipt.filterRules.Write(ipt.ingressPorts.Bytes())
 	ipt.filterRules.Write(ipt.ingressFrom.Bytes())
@@ -240,6 +261,28 @@ func (ipt *iptableBuffer) renderIngress(s *Server, podInfo *controllers.PodInfo,
 		ipt.renderIngressPorts(s, podInfo, idx, n, ingress.Ports, policyNetworks)
 		ipt.renderIngressFrom(s, podInfo, idx, n, ingress.From, policyNetworks)
 		writeLine(ipt.policyIndex, "-A", chainName, "-m", "mark", "--mark", "0x30000/0x30000", "-j", "RETURN")
+	}
+}
+
+func (ipt *iptableBuffer) renderAdditionalRules(s *Server, rules *AdditionalRules) {
+	if len(rules.Ingress) > 0 {
+		ipt.CreateFilterChain(additionalIngressChain)
+		writeLine(ipt.policyAdditional, "-A", additionalIngressChain,
+			"-m", "comment", "--comment", `"additional rules from pod annotation"`)
+
+		for _, rule := range rules.Ingress {
+			writeLine(ipt.policyAdditional, "-A", additionalIngressChain, rule)
+		}
+	}
+
+	if len(rules.Egress) > 0 {
+		ipt.CreateFilterChain(additionalEgressChain)
+		writeLine(ipt.policyAdditional, "-A", additionalEgressChain,
+			"-m", "comment", "--comment", `"additional rules from pod annotation"`)
+
+		for _, rule := range rules.Egress {
+			writeLine(ipt.policyAdditional, "-A", additionalEgressChain, rule)
+		}
 	}
 }
 

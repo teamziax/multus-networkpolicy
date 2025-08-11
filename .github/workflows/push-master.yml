@@ -1,5 +1,6 @@
 name: push-master
 on:
+  workflow_dispatch:
   push:
     branches:
       - master
@@ -30,6 +31,7 @@ jobs:
         if: github.repository_owner == 'k8snetworkplumbingwg'
         uses: docker/build-push-action@v5
         with:
+          file: Dockerfile.openshift
           push: true
           tags: |
             ghcr.io/${{ github.repository }}:latest

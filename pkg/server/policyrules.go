@@ -266,6 +266,9 @@ func (ipt *iptableBuffer) renderIngress(s *Server, podInfo *controllers.PodInfo,
 
 func (ipt *iptableBuffer) renderAdditionalRules(s *Server, rules *AdditionalRules) {
 	if len(rules.Ingress) > 0 {
+		// Add jump from MULTI-INGRESS
+		writeLine(ipt.policyIndex, "-A", ingressChain, "-j", additionalIngressChain)
+
 		ipt.CreateFilterChain(additionalIngressChain)
 		writeLine(ipt.policyAdditional, "-A", additionalIngressChain,
 			"-m", "comment", "--comment", `"additional rules from pod annotation"`)
@@ -276,6 +279,9 @@ func (ipt *iptableBuffer) renderAdditionalRules(s *Server, rules *AdditionalRule
 	}
 
 	if len(rules.Egress) > 0 {
+		// Add jump from MULTI-EGRESS
+		writeLine(ipt.policyIndex, "-A", egressChain, "-j", additionalEgressChain)
+
 		ipt.CreateFilterChain(additionalEgressChain)
 		writeLine(ipt.policyAdditional, "-A", additionalEgressChain,
 			"-m", "comment", "--comment", `"additional rules from pod annotation"`)
